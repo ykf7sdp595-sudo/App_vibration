@@ -1,0 +1,3 @@
+-r requirements.txt
+# Outil de fabrication seulement ; ne pas installer chez les destinataires.
+pyinstaller>=6.16,<7
