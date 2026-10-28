@@ -1,5 +1,12 @@
 # Historique des versions
 
+## Rangement du dépôt — 2026-10-28
+
+- V1.1 active sur `main` (PR nº 1 déjà fusionnée).
+- Anciennes notes et caches compilés déplacés dans `grenier/`.
+- Ancienne application RF archivée depuis le tag V1.1.
+- Aucun changement de calcul ; tag V1.1 et historique conservés.
+
 ## V1.1 — 2026-10-28
 
 Version issue de V1.0 (30332bb), publiée sur une branche distincte pour préserver

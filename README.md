@@ -1,4 +1,4 @@
-# App_vibration
+# App_vibration — V1.1
 
 Application locale Streamlit de lecture de CSV et d’analyse vibratoire.
 Python 3.12 recommandé. Les dépendances directes validées sont dans `requirements.txt`.
@@ -39,7 +39,7 @@ Les pics détectés sont des maxima locaux : ils ne constituent pas un verdict d
 
 Quatre tests nécessitent `/mnt/data/csv_test_sin.csv` et sont ignorés en son absence.
 Les autres utilisent des données synthétiques ; ils ne remplacent pas une validation
-avec les fichiers d’essais réels. Les documents README_ETAPE* décrivent l’historique.
+avec les fichiers d’essais réels. Les anciennes notes de développement sont dans [grenier/documentation](grenier/documentation/).
 
 ## Organisation
 
@@ -50,6 +50,13 @@ avec les fichiers d’essais réels. Les documents README_ETAPE* décrivent l’
 - `plotting.py` : réduction des données pour l’affichage uniquement.
 - `tests/` : tests automatisés.
 
-`test.py` est une application RF distincte, conservée pour éviter de perdre du
-travail existant. Elle n’est pas lancée par App_vibration et n’est pas un test de
-cette application. Sa dépendance `scikit-rf` est volontairement exclue de cette installation.
+- `requirements.txt` : dépendances de l’application.
+- `CHANGELOG.md` : historique des versions.
+- [`grenier/`](grenier/README.md) : anciennes documentations, application RF et artefacts historiques.
+
+## Versions
+
+`main` contient la V1.1 active et la réorganisation du dépôt.
+Le tag `v1.1` conserve la livraison originale avant rangement ; la branche
+`release/v1.1` reste disponible. La V1.0 est conservée dans l’historique Git
+(commit `30332bb`). Le rangement ne modifie pas les calculs ni la commande de lancement.
