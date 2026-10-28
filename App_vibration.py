@@ -1,4 +1,5 @@
 import io
+import hashlib
 import csv
 from pathlib import Path
 from scipy.signal import find_peaks
@@ -7,56 +8,20 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 
+from csv_reader import read_csv_robust, convert_numeric_columns
+from column_registry import build_column_registry
+from sweeps import candidate_pairs, compatible_pairs, analyze_sweep
+import plotly.graph_objects as go
+from specialized_tabs import ui_vibrations, ui_chocs, ui_psd
+
 st.set_page_config(page_title="Lecteur CSV d'essais", layout="wide")
 st.title("Lecteur CSV — données d'essais")
 st.caption("Import, exploration, filtrage et tracé de courbes à partir d'un fichier CSV.")
 
 @st.cache_data(show_spinner=False)
-def load_csv(file_bytes: bytes, filename: str) -> pd.DataFrame:
-    """Essaie plusieurs encodages et séparateurs courants."""
-    last_error = None
-    # "\t" dans le code Python représente une vraie tabulation.
-    # On teste aussi les séparateurs courants sans passer de séparateur multi-caractères.
-    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
-        for sep in (",", ";", "\t", "|"):
-            try:
-                df = pd.read_csv(
-                    io.BytesIO(file_bytes),
-                    encoding=encoding,
-                    sep=sep,
-                    engine="c",
-                    low_memory=False,
-                    on_bad_lines="error",
-                )
-                # Ignore les essais qui n'ont pas correctement séparé les colonnes.
-                if len(df.columns) > 1:
-                    df.columns = [str(c).strip() for c in df.columns]
-                    return df
-            except Exception as exc:
-                last_error = exc
-
-    # Dernier recours : laisse Python détecter le séparateur à partir d'un échantillon.
-    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
-        try:
-            sample = file_bytes[:65536].decode(encoding, errors="replace")
-            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
-            df = pd.read_csv(
-                io.BytesIO(file_bytes),
-                encoding=encoding,
-                sep=dialect.delimiter,
-                engine="python",
-                on_bad_lines="warn",
-            )
-            if len(df.columns) > 1:
-                df.columns = [str(c).strip() for c in df.columns]
-                return df
-        except Exception as exc:
-            last_error = exc
-
-    raise ValueError(
-        "Impossible de lire ce CSV. Vérifie son séparateur, son encodage "
-        f"et la cohérence des lignes. Détail : {last_error}"
-    )
+def load_csv(file_bytes: bytes, filename: str):
+    """Lecture sans perte silencieuse de lignes, avec diagnostic des irrégularités."""
+    return read_csv_robust(file_bytes)
 
 uploaded = st.file_uploader("Choisir un fichier CSV", type=["csv", "txt"])
 
@@ -64,15 +29,22 @@ if uploaded is None:
     st.info("Importe un fichier CSV pour commencer. Le fichier est traité dans cette session.")
     st.markdown("""
     **Fonctions disponibles**
-    - Tableau interactif avec tri et recherche via les filtres de colonnes.
     - Filtrage numérique sur les colonnes choisies.
     - Courbes avec choix libre des axes X et Y.
-    - Statistiques descriptives et export des données filtrées.
+    - Export des données filtrées.
     """)
     st.stop()
 
+# Réinitialise les sélections de mesure à chaque nouveau fichier.
+file_digest = hashlib.sha256(uploaded.getvalue()).hexdigest()
+if st.session_state.get('_current_file_digest') != file_digest:
+    for _key in list(st.session_state):
+        if isinstance(_key, str) and _key.startswith(('sweeps_', 'vib_', 'shock_', 'psd_', 'filter_')):
+            del st.session_state[_key]
+    st.session_state['_current_file_digest'] = file_digest
+
 try:
-    df = load_csv(uploaded.getvalue(), uploaded.name)
+    df, csv_report = load_csv(uploaded.getvalue(), uploaded.name)
 except Exception as exc:
     st.error(str(exc))
     st.stop()
@@ -81,15 +53,40 @@ if df.empty:
     st.warning("Le fichier ne contient aucune ligne.")
     st.stop()
 
-# Convertit en numérique les colonnes qui semblent être des nombres,
-# sans écraser les colonnes contenant réellement du texte.
-for col in df.columns:
-    if df[col].dtype == "object":
-        converted = pd.to_numeric(df[col].astype(str).str.replace(",", ".", regex=False), errors="coerce")
-        if converted.notna().mean() >= 0.85:
-            df[col] = converted
+st.caption(f"CSV : {csv_report['encoding']} ; séparateur : {csv_report['delimiter']!r} ; "
+           f"{csv_report['data_rows']} lignes conservées.")
+if csv_report['extra_empty_rows']:
+    st.warning(f"{csv_report['extra_empty_rows']} ligne(s) contiennent des champs finaux vides "
+               "supplémentaires, ignorés sans supprimer de ligne.")
+if csv_report['short_rows']:
+    st.warning(f"{csv_report['short_rows']} ligne(s) plus courtes que l'en-tête : "
+               "cellules manquantes laissées vides (aucune valeur inventée).")
+if csv_report['extra_nonempty_rows']:
+    st.warning(f"{csv_report['extra_nonempty_rows']} ligne(s) contiennent des champs "
+               "supplémentaires non vides, conservés dans des colonnes dédiées. "
+               "Vérifier leur alignement avant toute analyse scientifique.")
+if csv_report['duplicate_headers']:
+    st.info(f"{csv_report['duplicate_headers']} en-tête(s) répété(s) : "
+            "les colonnes ont été distinguées par leur position, sans fusion.")
+
+# Les groupes CSV peuvent avoir 2000, 4096 ou 7572 valeurs utiles.
+# On évalue la conversion uniquement sur les cellules présentes.
+df = convert_numeric_columns(df)
 
 numeric_cols = df.select_dtypes(include="number").columns.tolist()
+
+# Étape 2 : registre informatif uniquement, sans changer les sélections actuelles.
+registry = build_column_registry(df, csv_report)
+with st.expander("Registre des colonnes et unités", expanded=False):
+    st.caption("Indices à partir de 0 · noms bruts conservés · unités non devinées. "
+               "Les groupes sont reconnus par des séquences d'en-têtes exactes.")
+    st.dataframe(pd.DataFrame(registry).drop(columns=["colonne_interne"]),
+                 use_container_width=True, hide_index=True)
+    warnings = [c for c in registry if c["statut_unité"] in ("ambiguë", "alerte_encodage")]
+    if warnings:
+        st.warning("Unité ambiguë ou encodage suspect : " +
+                   ", ".join(f"[{c['index']}] {c['nom_brut']}" for c in warnings))
+
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Lignes", f"{len(df):,}".replace(",", " "))
@@ -100,12 +97,6 @@ m4.metric("Valeurs manquantes", f"{int(df.isna().sum().sum()):,}".replace(",", "
 with st.sidebar:
     st.header("Options")
     st.write(f"**Fichier :** {uploaded.name}")
-    selected_columns = st.multiselect(
-        "Colonnes à afficher",
-        options=df.columns.tolist(),
-        default=df.columns.tolist(),
-    )
-    st.divider()
     st.subheader("Filtres numériques")
     filter_cols = st.multiselect(
         "Colonnes à filtrer",
@@ -133,32 +124,76 @@ for col in filter_cols:
     )
     filtered = filtered[series.between(chosen[0], chosen[1])]
 
-tab_data, tab_plot, tab_stats = st.tabs(["Données", "Courbes", "Statistiques"])
+tab_sweeps, tab_vibrations, tab_chocs, tab_psd, tab_free = st.tabs(["SWEEPS", "VIBRATIONS", "CHOCS", "PSD", "Tracé libre (historique)"])
 
-with tab_data:
-    st.subheader("Tableau des données")
-    search_text = st.text_input("Recherche textuelle dans les lignes", placeholder="Ex. : une valeur ou un terme")
-    view = filtered
-    if search_text:
-        mask = view.astype(str).apply(
-            lambda col: col.str.contains(search_text, case=False, na=False, regex=False)
-        ).any(axis=1)
-        view = view[mask]
-    cols_to_show = [c for c in selected_columns if c in view.columns]
-    if not cols_to_show:
-        st.warning("Sélectionne au moins une colonne dans la barre latérale.")
+with tab_sweeps:
+    st.subheader("SWEEPS — fréquence en fonction du temps")
+    pairs = candidate_pairs(df, registry)
+    ready = compatible_pairs(df, registry)
+    if not pairs:
+        st.info("Aucun couple temps/fréquence déclaré trouvé dans ce CSV. L’onglet Tracé libre reste disponible.")
     else:
-        st.caption(f"{len(view):,} ligne(s) affichée(s) après filtrage.".replace(",", " "))
-        st.dataframe(view[cols_to_show], use_container_width=True, height=520)
-    csv_bytes = filtered.to_csv(index=False).encode("utf-8-sig")
-    st.download_button(
-        "Télécharger les données filtrées (CSV)",
-        data=csv_bytes,
-        file_name=f"{Path(uploaded.name).stem}_filtre.csv",
-        mime="text/csv",
-    )
+        # Les couples compatibles sont proposés d'abord ; les autres restent
+        # sélectionnables pour afficher un refus explicite et traçable.
+        ordered = ready + [pair for pair in pairs if pair not in ready]
+        def describe_pair(pair):
+            t, f = pair
+            return (f"Temps [{t}] {registry[t]['nom_brut']}  /  "
+                    f"Fréquence [{f}] {registry[f]['nom_brut']}")
+        pair = st.selectbox("Couple temps / fréquence", ordered,
+                            format_func=describe_pair, key="sweeps_pair")
+        t_idx, f_idx = pair
+        result = analyze_sweep(df, registry, t_idx, f_idx)
+        if not result.ok:
+            st.warning(result.message)
+        else:
+            tr, fr = result.time, result.frequency
+            assert tr is not None and fr is not None
+            t_unit = registry[t_idx]['unité_normalisée']
+            f_unit = registry[f_idx]['unité_normalisée']
+            is_reference_setpoint = registry[f_idx]['rôle_proposé'] == 'fréquence de consigne (confirmée profil)'
+            y_title = ("Fréquence de consigne (" if is_reference_setpoint else "Fréquence (") + f_unit + ")"
+            st.caption(f"{len(tr):,} points · ordre d'acquisition conservé · "
+                       f"temps [{t_idx}], fréquence [{f_idx}]".replace(',', ' '))
+            log_freq = st.checkbox("Axe fréquence logarithmique",
+                                   value=result.log_frequency_suggested, key=f"sweeps_log_{t_idx}_{f_idx}")
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=tr, y=fr, mode="lines", name=y_title))
+            fig.update_layout(xaxis_title=registry[t_idx]['nom_brut'],
+                              yaxis_title=y_title, hovermode="closest")
+            fig.update_yaxes(type="log" if log_freq else "linear")
+            st.plotly_chart(fig, use_container_width=True)
+            a, b, c = st.columns(3)
+            a.metric("Fréquence minimale", f"{fr.min():g} {f_unit}")
+            b.metric("Fréquence maximale", f"{fr.max():g} {f_unit}")
+            c.metric("Changements de sens", result.n_reversals)
+            st.caption(f"Pas Δt : {result.dt_min:g} à {result.dt_max:g} {t_unit} · "
+                       f"df/dt : {result.rate_min:g} à {result.rate_max:g} Hz/min · "
+                       f"vitesse logarithmique : {result.octave_rate_min:g} à "
+                       f"{result.octave_rate_max:g} octaves/min (indicateurs dérivés)")
+            if result.dt_max is not None and result.dt_min is not None and result.dt_max > result.dt_min * 1.01:
+                st.info("Le pas de temps varie ; aucune interpolation ni rééchantillonnage n'est appliqué.")
+            if result.n_reversals:
+                st.info("La fréquence comporte des changements de sens : tracé dans l'ordre du fichier, sans tri.")
+            import json
+            st.download_button('Exporter les paramètres SWEEPS (JSON)',
+                data=json.dumps({'source':'CSV','temps':registry[t_idx]['nom_brut'],
+                    'temps_index':t_idx,'frequence':registry[f_idx]['nom_brut'],
+                    'frequence_index':f_idx,'points':len(tr),'unite_temps':t_unit,
+                    'unite_frequence':f_unit,'axe_logarithmique':log_freq},
+                    ensure_ascii=False,indent=2),file_name='sweeps_parametres.json',
+                    mime='application/json',key='sweeps_export')
 
-with tab_plot:
+with tab_vibrations:
+    ui_vibrations(df, registry, csv_report)
+
+with tab_chocs:
+    ui_chocs(df, registry, csv_report)
+
+with tab_psd:
+    ui_psd(df, registry, csv_report)
+
+with tab_free:
     st.subheader("Tracer une ou plusieurs séries")
     if len(numeric_cols) < 2:
         st.warning("Il faut au moins deux colonnes numériques pour tracer une courbe.")
@@ -187,7 +222,7 @@ with tab_plot:
         max_local = st.checkbox("Afficher les maxima locaux de chaque série", value=False)
         min_local = st.checkbox("Afficher les minima locaux de chaque série", value=False)
         max_points = st.slider("Nombre maximal de points affichés", 1000, 30000, 10000, step=1000)
-        
+
         if y_cols:
             plot_df = filtered[[x_col] + y_cols].dropna(subset=[x_col]).copy()
             plot_df = plot_df.sort_values(x_col)
@@ -213,11 +248,11 @@ with tab_plot:
         else:
             st.info("Choisis au moins une série Y.")
 
-with tab_stats:
-    st.subheader("Statistiques descriptives")
-    if numeric_cols:
-        st.dataframe(filtered[numeric_cols].describe().T, use_container_width=True)
-    st.subheader("Valeurs manquantes par colonne")
-    missing = filtered.isna().sum().rename("Valeurs manquantes").to_frame()
-    missing["Pourcentage"] = (filtered.isna().mean() * 100).round(2)
-    st.dataframe(missing, use_container_width=True)
+# Export conservé après suppression de l'onglet « Données ».
+csv_bytes = filtered.to_csv(index=False).encode("utf-8-sig")
+st.download_button(
+    "Télécharger les données filtrées (CSV)",
+    data=csv_bytes,
+    file_name=f"{Path(uploaded.name).stem}_filtre.csv",
+    mime="text/csv",
+)
