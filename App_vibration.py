@@ -12,7 +12,8 @@ from csv_reader import read_csv_robust, convert_numeric_columns
 from column_registry import build_column_registry
 from sweeps import candidate_pairs, compatible_pairs, analyze_sweep
 import plotly.graph_objects as go
-from specialized_tabs import ui_vibrations, ui_chocs, ui_psd
+from specialized_tabs import (ui_vibrations, ui_chocs, ui_psd,
+                              plot_axis_controls, apply_plot_axis_controls)
 
 st.set_page_config(page_title="Lecteur CSV d'essais", layout="wide")
 st.title("Lecteur CSV — données d'essais")
@@ -155,13 +156,15 @@ with tab_sweeps:
             y_title = ("Fréquence de consigne (" if is_reference_setpoint else "Fréquence (") + f_unit + ")"
             st.caption(f"{len(tr):,} points · ordre d'acquisition conservé · "
                        f"temps [{t_idx}], fréquence [{f_idx}]".replace(',', ' '))
-            log_freq = st.checkbox("Axe fréquence logarithmique",
-                                   value=result.log_frequency_suggested, key=f"sweeps_log_{t_idx}_{f_idx}")
+            axis_options=plot_axis_controls(
+                f"SWEEPS — {registry[t_idx]['nom_brut']} / {registry[f_idx]['nom_brut']}",
+                registry[t_idx]['nom_brut'],y_title,tr,fr,
+                f"sweeps_axis_{t_idx}_{f_idx}",
+                log_y_default=result.log_frequency_suggested)
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=tr, y=fr, mode="lines", name=y_title))
-            fig.update_layout(xaxis_title=registry[t_idx]['nom_brut'],
-                              yaxis_title=y_title, hovermode="closest")
-            fig.update_yaxes(type="log" if log_freq else "linear")
+            apply_plot_axis_controls(fig,axis_options)
+            fig.update_layout(hovermode="closest")
             st.plotly_chart(fig, use_container_width=True)
             a, b, c = st.columns(3)
             a.metric("Fréquence minimale", f"{fr.min():g} {f_unit}")
@@ -180,7 +183,8 @@ with tab_sweeps:
                 data=json.dumps({'source':'CSV','temps':registry[t_idx]['nom_brut'],
                     'temps_index':t_idx,'frequence':registry[f_idx]['nom_brut'],
                     'frequence_index':f_idx,'points':len(tr),'unite_temps':t_unit,
-                    'unite_frequence':f_unit,'axe_logarithmique':log_freq},
+                    'unite_frequence':f_unit,
+                    'axe_logarithmique':axis_options['log_y']},
                     ensure_ascii=False,indent=2),file_name='sweeps_parametres.json',
                     mime='application/json',key='sweeps_export')
 
@@ -215,34 +219,32 @@ with tab_free:
             options=[c for c in numeric_cols if c != x_col],
             default=default_y,
         )
-        log_x = st.checkbox("Échelle logarithmique sur X", value=False)
-        log_y = st.checkbox("Échelle logarithmique sur Y", value=False)
-        max_global = st.checkbox("Afficher le maximum global de chaque série", value=False)
-        min_global = st.checkbox("Afficher le minimum global de chaque série", value=False)
-        max_local = st.checkbox("Afficher les maxima locaux de chaque série", value=False)
-        min_local = st.checkbox("Afficher les minima locaux de chaque série", value=False)
+        
         max_points = st.slider("Nombre maximal de points affichés", 1000, 30000, 10000, step=1000)
 
         if y_cols:
+            axis_options=plot_axis_controls(
+                f"Tracé libre — {x_col} / {', '.join(y_cols)}",
+                x_col,', '.join(y_cols),filtered[x_col].to_numpy(),
+                [filtered[col].to_numpy() for col in y_cols],
+                'free_axis_'+file_digest[:12]+'_'+str(numeric_cols.index(x_col))+'_'+
+                '_'.join(str(numeric_cols.index(col)) for col in y_cols))
             plot_df = filtered[[x_col] + y_cols].dropna(subset=[x_col]).copy()
             plot_df = plot_df.sort_values(x_col)
             if len(plot_df) > max_points:
                 # Échantillonnage régulier pour garder une interface réactive.
                 step = max(1, len(plot_df) // max_points)
                 plot_df = plot_df.iloc[::step]
-            if log_x:
+            if axis_options['log_x']:
                 plot_df = plot_df[plot_df[x_col] > 0]
-            if log_y:
+            if axis_options['log_y']:
                 for c in y_cols:
                     plot_df = plot_df[plot_df[c] > 0]
             if plot_df.empty:
                 st.warning("Aucun point exploitable avec ces filtres et échelles.")
             else:
                 fig = px.line(plot_df, x=x_col, y=y_cols)
-                if log_x:
-                    fig.update_xaxes(type="log")
-                if log_y:
-                    fig.update_yaxes(type="log")
+                apply_plot_axis_controls(fig,axis_options)
                 st.plotly_chart(fig, use_container_width=True)
                 st.caption(f"{len(plot_df):,} points tracés.".replace(",", " "))
         else:
