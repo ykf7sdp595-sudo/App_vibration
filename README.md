@@ -60,3 +60,8 @@ avec les fichiers d’essais réels. Les anciennes notes de développement sont 
 Le tag `v1.1` conserve la livraison originale avant rangement ; la branche
 `release/v1.1` reste disponible. La V1.0 est conservée dans l’historique Git
 (commit `30332bb`). Le rangement ne modifie pas les calculs ni la commande de lancement.
+
+## Distribution Windows sans Python
+
+Voir le [guide de fabrication dans VS Code](packaging/README.md).
+Le paquet doit être construit et validé sur Windows avant distribution.
