@@ -1,13 +1,11 @@
-import io
 import hashlib
-import csv
 from pathlib import Path
-from scipy.signal import find_peaks
 
 import pandas as pd
 import streamlit as st
 import plotly.express as px
 
+from plotting import reduce_plot_points
 from csv_reader import read_csv_robust, convert_numeric_columns
 from column_registry import build_column_registry
 from sweeps import candidate_pairs, compatible_pairs, analyze_sweep
@@ -19,10 +17,12 @@ st.set_page_config(page_title="Lecteur CSV d'essais", layout="wide")
 st.title("Lecteur CSV — données d'essais")
 st.caption("Import, exploration, filtrage et tracé de courbes à partir d'un fichier CSV.")
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=2)
 def load_csv(file_bytes: bytes, filename: str):
     """Lecture sans perte silencieuse de lignes, avec diagnostic des irrégularités."""
-    return read_csv_robust(file_bytes)
+    df, report = read_csv_robust(file_bytes)
+    df = convert_numeric_columns(df)
+    return df, report, build_column_registry(df, report)
 
 uploaded = st.file_uploader("Choisir un fichier CSV", type=["csv", "txt"])
 
@@ -45,7 +45,7 @@ if st.session_state.get('_current_file_digest') != file_digest:
     st.session_state['_current_file_digest'] = file_digest
 
 try:
-    df, csv_report = load_csv(uploaded.getvalue(), uploaded.name)
+    df, csv_report, registry = load_csv(uploaded.getvalue(), uploaded.name)
 except Exception as exc:
     st.error(str(exc))
     st.stop()
@@ -72,12 +72,9 @@ if csv_report['duplicate_headers']:
 
 # Les groupes CSV peuvent avoir 2000, 4096 ou 7572 valeurs utiles.
 # On évalue la conversion uniquement sur les cellules présentes.
-df = convert_numeric_columns(df)
-
 numeric_cols = df.select_dtypes(include="number").columns.tolist()
 
 # Étape 2 : registre informatif uniquement, sans changer les sélections actuelles.
-registry = build_column_registry(df, csv_report)
 with st.expander("Registre des colonnes et unités", expanded=False):
     st.caption("Indices à partir de 0 · noms bruts conservés · unités non devinées. "
                "Les groupes sont reconnus par des séquences d'en-têtes exactes.")
@@ -106,7 +103,7 @@ with st.sidebar:
         help="Chaque filtre conserve les lignes comprises entre les deux bornes.",
     )
 
-filtered = df.copy()
+filtered = df
 for col in filter_cols:
     series = pd.to_numeric(filtered[col], errors="coerce")
     finite = series.dropna()
@@ -125,9 +122,9 @@ for col in filter_cols:
     )
     filtered = filtered[series.between(chosen[0], chosen[1])]
 
-tab_sweeps, tab_vibrations, tab_chocs, tab_psd, tab_free = st.tabs(["SWEEPS", "VIBRATIONS", "CHOCS", "PSD", "Tracé libre (historique)"])
+active_view = st.radio("Analyse", ["SWEEPS", "VIBRATIONS", "CHOCS", "PSD", "Tracé libre (historique)"], horizontal=True, key="active_view")
 
-with tab_sweeps:
+if active_view == "SWEEPS":
     st.subheader("SWEEPS — fréquence en fonction du temps")
     pairs = candidate_pairs(df, registry)
     ready = compatible_pairs(df, registry)
@@ -188,16 +185,16 @@ with tab_sweeps:
                     ensure_ascii=False,indent=2),file_name='sweeps_parametres.json',
                     mime='application/json',key='sweeps_export')
 
-with tab_vibrations:
+if active_view == "VIBRATIONS":
     ui_vibrations(df, registry, csv_report)
 
-with tab_chocs:
+if active_view == "CHOCS":
     ui_chocs(df, registry, csv_report)
 
-with tab_psd:
+if active_view == "PSD":
     ui_psd(df, registry, csv_report)
 
-with tab_free:
+if active_view == "Tracé libre (historique)":
     st.subheader("Tracer une ou plusieurs séries")
     if len(numeric_cols) < 2:
         st.warning("Il faut au moins deux colonnes numériques pour tracer une courbe.")
@@ -231,15 +228,19 @@ with tab_free:
                 '_'.join(str(numeric_cols.index(col)) for col in y_cols))
             plot_df = filtered[[x_col] + y_cols].dropna(subset=[x_col]).copy()
             plot_df = plot_df.sort_values(x_col)
-            if len(plot_df) > max_points:
-                # Échantillonnage régulier pour garder une interface réactive.
-                step = max(1, len(plot_df) // max_points)
-                plot_df = plot_df.iloc[::step]
             if axis_options['log_x']:
                 plot_df = plot_df[plot_df[x_col] > 0]
             if axis_options['log_y']:
                 for c in y_cols:
                     plot_df = plot_df[plot_df[c] > 0]
+            original_count = len(plot_df)
+            try:
+                plot_df = reduce_plot_points(plot_df, y_cols, max_points)
+            except ValueError as exc:
+                st.warning(str(exc))
+                plot_df = plot_df.iloc[:0]
+            if original_count > len(plot_df):
+                st.caption("Affichage réduit avec conservation des extrema par intervalle ; calculs et export utilisent les données complètes.")
             if plot_df.empty:
                 st.warning("Aucun point exploitable avec ces filtres et échelles.")
             else:
@@ -251,10 +252,10 @@ with tab_free:
             st.info("Choisis au moins une série Y.")
 
 # Export conservé après suppression de l'onglet « Données ».
-csv_bytes = filtered.to_csv(index=False).encode("utf-8-sig")
-st.download_button(
-    "Télécharger les données filtrées (CSV)",
-    data=csv_bytes,
-    file_name=f"{Path(uploaded.name).stem}_filtre.csv",
-    mime="text/csv",
-)
+if st.button("Préparer l’export CSV"):
+    csv_bytes = filtered.to_csv(index=False).encode("utf-8-sig")
+    st.download_button(
+        "Télécharger les données filtrées (CSV)", data=csv_bytes,
+        file_name=f"{Path(uploaded.name).stem}_filtre.csv", mime="text/csv",
+        on_click="ignore",
+    )

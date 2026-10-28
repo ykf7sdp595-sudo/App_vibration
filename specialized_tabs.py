@@ -159,7 +159,7 @@ def _analysis_labels(fig, records, unit, frequency_scale=1.0, position='top cent
 def _vibration_analysis_options(unit, key_prefix):
     with st.expander('Analyse des pics et extrema',expanded=False):
         detect_peaks=st.checkbox(
-            'Détecter les pics anormaux',value=False,key=f'{key_prefix}_detect_peaks')
+            'Détecter les pics',value=False,key=f'{key_prefix}_detect_peaks')
         min_prominence=(st.number_input(
             f'Proéminence minimale ({unit})',min_value=0.0,value=0.0,
             step=0.1,format='%.6g',key=f'{key_prefix}_peak_prominence')
@@ -426,7 +426,11 @@ def ui_chocs(df,reg,report):
     times=[]
     amplitudes=[]
     for j in selected:
-        t,x=signal_time_series(df,reg,t_idx,j)
+        try:
+            t,x=signal_time_series(df,reg,t_idx,j)
+        except (ScientificError, ValueError, TypeError) as exc:
+            st.warning(f'{label(reg,j)} — voie non tracée : {exc}')
+            continue
         if len(t) and np.isfinite(t).all() and np.isfinite(x).all():
             _trace(fig,t,x,reg,j)
             valid.append(j)
@@ -515,8 +519,12 @@ def ui_psd(df,reg,report):
                     f'Axe fréquence pour {label(reg,j)}',compatible,
                     format_func=lambda index:label(reg,index),
                     key=f'psd_frequency_{j}')
-            f=df.iloc[:,i].dropna().to_numpy(dtype=float)
-            p=df.iloc[:,j].dropna().to_numpy(dtype=float)
+            try:
+                f=df.iloc[:,i].dropna().to_numpy(dtype=float)
+                p=df.iloc[:,j].dropna().to_numpy(dtype=float)
+            except (ValueError, TypeError) as exc:
+                st.warning(f'{label(reg,j)} — PSD non tracée : {exc}')
+                continue
             if not np.isfinite(f).all() or not np.isfinite(p).all() or np.any(f<=0) or np.any(p<0):
                 st.warning(f'{label(reg,j)} : valeurs PSD ou fréquences invalides.')
                 continue
