@@ -117,13 +117,12 @@ def read_csv_robust(file_bytes: bytes):
         while name in names or name in extra_names:
             name += "_"
         extra_names.append(name)
-    cleaned = []
+    # Normaliser les lignes en place pour éviter une seconde table Python.
+    target_width = width + max_nonempty_extra
     for row in rows:
-        values = row[:width]
-        extras = row[width:]
-        # Champs finaux vides ignorés uniquement au-delà de l'en-tête.
-        cleaned.append(values + (extras[:max_nonempty_extra] + [""] * max(0, max_nonempty_extra - len(extras))))
-    df = pd.DataFrame(cleaned, columns=names + extra_names)
+        del row[target_width:]
+        row.extend([""] * (target_width - len(row)))
+    df = pd.DataFrame(rows, columns=names + extra_names)
     df = df.replace("", float("nan"))
     report = {
         "encoding": encoding,

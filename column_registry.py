@@ -6,6 +6,7 @@ la magnitude des valeurs. Les positions sont en base zéro.
 import re
 from dataclasses import asdict, dataclass
 
+import numpy as np
 import pandas as pd
 
 
@@ -116,7 +117,7 @@ def build_column_registry(df: pd.DataFrame, csv_report: dict) -> list[dict]:
     order = sorted((start, group) for group, start in anchors.items())
     starts = {group: start for start, group in order}
     registered = []
-    supports = [frozenset(df.index[df.iloc[:, i].notna()]) for i in range(len(df.columns))]
+    supports = [np.flatnonzero(df.iloc[:, i].notna().to_numpy()) for i in range(len(df.columns))]
     for idx, col in enumerate(df.columns):
         raw = headers[idx] if idx < len(headers) else col
         unit = parse_unit(raw)
@@ -130,7 +131,7 @@ def build_column_registry(df: pd.DataFrame, csv_report: dict) -> list[dict]:
         if group != 'non déterminé':
             anchor_idx = starts[group]
             anchor_support = supports[anchor_idx]
-            if idx >= len(headers) or supports[idx] != anchor_support:
+            if idx >= len(headers) or not np.array_equal(supports[idx], anchor_support):
                 group = 'non déterminé'
         # Si seul C est reconnu, aucun groupe n'est présumé avant son ancre.
         if idx >= len(headers):
@@ -158,6 +159,6 @@ def build_column_registry(df: pd.DataFrame, csv_report: dict) -> list[dict]:
             'abscisse': (f"[{starts[group]}] {headers[starts[group]]}"
                           if group in starts and idx != starts[group] else 'à déterminer'),
             'rôle_proposé': role, 'confiance': confidence,
-            'trous_internes': (max(supports[idx]) - min(supports[idx]) + 1 - count) if count else 0,
+            'trous_internes': (int(supports[idx][-1]) - int(supports[idx][0]) + 1 - count) if count else 0,
         })
     return registered
