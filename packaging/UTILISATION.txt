@@ -1,4 +1,4 @@
-App_vibration V1.1 — Windows
+App_vibration V1.3 — Windows
 
 1. Décompresser entièrement le ZIP dans un dossier local.
 2. Double-cliquer sur App_vibration.exe.
@@ -6,8 +6,8 @@ App_vibration V1.1 — Windows
 4. Importer le CSV et utiliser l'application normalement.
 
 Si le navigateur ne s'ouvre pas, copier l'adresse locale affichée dans la console.
-Pour arrêter le serveur : Ctrl+C dans la console. Fermer uniquement l'onglet
-ne ferme pas le serveur.
+La fermeture du dernier onglet arrête le serveur après 15 secondes. Ctrl+C
+dans la console permet aussi de l'arrêter.
 
 Conserver tous les fichiers, y compris le dossier _internal.
 Python n'a pas besoin d'être installé sur le poste destinataire.

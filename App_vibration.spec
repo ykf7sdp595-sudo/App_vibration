@@ -13,7 +13,7 @@ for package in ('streamlit', 'pandas', 'numpy', 'scipy', 'plotly'):
     datas += copy_metadata(package)
 # Streamlit exécute le script source. Ses imports doivent également être analysés.
 modules = ['csv_reader', 'column_registry', 'science', 'selection', 'sweeps',
-           'vibrations', 'specialized_tabs', 'plotting']
+           'vibrations', 'specialized_tabs', 'plotting', 'chart_controls']
 datas += [(str(root / 'App_vibration.py'), '.')]
 hiddenimports += modules + ['pandas', 'numpy', 'scipy.signal', 'plotly.express',
                             'plotly.graph_objects', 'streamlit.web.bootstrap']

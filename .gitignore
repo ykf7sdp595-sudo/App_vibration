@@ -5,3 +5,14 @@ __pycache__/
 .venv-build/
 build/
 dist/
+dist_*/
+Exe/
+.test-tmp/
+*.csv
+*.CSV
+*.png
+*.xls
+*.xlsx
+*.xlsm
+*.log
+.streamlit/secrets.toml

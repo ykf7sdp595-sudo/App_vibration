@@ -1,5 +1,21 @@
 # Historique des versions
 
+## V1.3
+
+- Interface harmonisée : import latéral, graphiques avant leurs réglages,
+  légendes en dessous, panneaux repliés et informations d'import regroupées.
+- Fermeture automatique 15 secondes après la fermeture du dernier onglet.
+- Documentation et sauvegarde GitHub organisées ; version précédente conservée
+  sur la branche `v1.2`. Les calculs scientifiques restent inchangés.
+
+La V1.3 locale comprenait déjà les évolutions suivantes :
+
+- Import de plusieurs CSV/TXT en une seule opération, avec un onglet par fichier.
+- Analyses, filtres, graphiques et exports indépendants, même en cas de noms identiques.
+- Un fichier vide ou illisible ne bloque pas les autres fichiers du lot.
+- Nettoyage des réglages des fichiers retirés et cache de lecture porté à seize entrées.
+- Tests d’intégration multi-fichiers pour les cinq analyses et la suppression de fichiers.
+
 ## Rangement du dépôt — 2026-10-28
 
 - V1.1 active sur `main` (PR nº 1 déjà fusionnée).

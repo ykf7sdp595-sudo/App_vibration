@@ -1,7 +1,8 @@
 # Fabriquer le paquet Windows depuis VS Code
 
 Cette configuration prépare une distribution en dossier, pas un EXE autonome.
-La compilation Windows et le test sur un poste sans Python restent à effectuer.
+La V1.3 a été compilée et contrôlée localement sous Windows ; le test sur un
+autre poste sans Python reste à effectuer.
 
 ## Préparation
 
@@ -41,7 +42,7 @@ et enregistre les versions installées à côté de l'exécutable.
 
 Lancer l'EXE depuis l'Explorateur Windows. Vérifier l'import d'un CSV, les cinq
 vues, FFT, PSD, modifications des axes et téléchargement CSV/JSON. Vérifier
-l'arrêt par Ctrl+C, puis le redémarrage. Fermer le navigateur n'arrête pas le serveur.
+l'arrêt après fermeture du dernier onglet, puis le redémarrage. L'arrêt par Ctrl+C reste possible.
 Tester ensuite sur un poste Windows sans Python, avec les CSV de référence
 FFT/PSD déjà validés. Aucune compilation Linux ne remplace ce contrôle.
 En cas d'erreur, conserver le texte de la console et les avertissements de

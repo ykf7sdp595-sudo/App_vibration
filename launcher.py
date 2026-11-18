@@ -1,12 +1,38 @@
 """Lanceur local, utilisable avec Python ou dans un paquet PyInstaller."""
 from pathlib import Path
 import argparse
+import signal
 import socket
 import sys
 import threading
 import time
 import urllib.request
 import webbrowser
+
+
+def stop_when_tabs_closed(grace_seconds=15):
+    """Arrêter le serveur lorsque le dernier onglet reste fermé."""
+    from streamlit.runtime.runtime import Runtime, RuntimeState
+
+    connected_once = False
+    disconnected_at = None
+    while True:
+        if Runtime.exists():
+            state = Runtime.instance().state
+            if state in (RuntimeState.STOPPING, RuntimeState.STOPPED):
+                return
+            if state == RuntimeState.ONE_OR_MORE_SESSIONS_CONNECTED:
+                connected_once = True
+                disconnected_at = None
+            elif connected_once and state == RuntimeState.NO_SESSIONS_CONNECTED:
+                now = time.monotonic()
+                if disconnected_at is None:
+                    disconnected_at = now
+                elif now - disconnected_at >= grace_seconds:
+                    print('Dernier onglet fermé : arrêt de l’application.', flush=True)
+                    signal.raise_signal(signal.SIGINT)
+                    return
+        time.sleep(1)
 
 
 def application_path():
@@ -48,8 +74,8 @@ def main():
         raise FileNotFoundError(f'Application introuvable : {script}. Conservez tout le dossier distribué.')
     port = args.port or available_port()
     url = f'http://127.0.0.1:{port}'
-    print('App_vibration V1.1 — laissez cette fenêtre ouverte pendant utilisation.', flush=True)
-    print('Pour arrêter : Ctrl+C dans cette fenêtre, puis fermez l’onglet du navigateur.', flush=True)
+    print('App_vibration V1.3 — laissez cette fenêtre ouverte pendant utilisation.', flush=True)
+    print('Fermeture automatique après le dernier onglet ; Ctrl+C reste possible.', flush=True)
     print('Adresse locale :', url, flush=True)
     from streamlit.web import bootstrap
     options = {
@@ -61,6 +87,7 @@ def main():
         'global.developmentMode': False,
     }
     bootstrap.load_config_options(options)
+    threading.Thread(target=stop_when_tabs_closed, daemon=True).start()
     if not args.no_browser:
         threading.Thread(target=open_when_ready, args=(url,), daemon=True).start()
     bootstrap.run(str(script), False, [], options)

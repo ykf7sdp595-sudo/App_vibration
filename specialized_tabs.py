@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+from chart_controls import draw_chart, persistent_scale
 from science import (G0, ScientificError, validate_sampling, signal_stats,
                      fft_amplitude, welch_psd, band_rms, count_segments)
 from selection import (frequency_candidates, acceleration_candidates,validate_frequency_plot,
@@ -16,17 +17,17 @@ from vibrations import (constant_ratio,avd_consistency,find_vibration_peaks,
 def label(reg,i):
     return f"[{i}] {reg[i]['nom_brut']}"
 
-def _download_meta(meta, key):
+def _download_meta(meta, key, namespace=""):
     st.download_button('Exporter les paramètres (JSON)',
                        data=json.dumps(meta,ensure_ascii=False,indent=2),
-                       file_name=f'{key}_parametres.json',mime='application/json',key=f'export_{key}')
+                       file_name=f'{key}_parametres.json',mime='application/json',key=namespace + (f'export_{key}'))
 
 def _trace(fig,x,y,reg,i,kind='lines'):
     fig.add_trace(go.Scatter(x=x,y=y,mode=kind,name=label(reg,i)))
 
 
 def plot_axis_controls(title,x_title,y_title,x_values,y_values,key,
-                       log_x_default=False,log_y_default=False):
+                       log_x_default=False,log_y_default=False, namespace=""):
     def finite_values(values):
         if isinstance(values,(list,tuple)):
             arrays=[np.asarray(value,dtype=float).ravel() for value in values]
@@ -50,22 +51,18 @@ def plot_axis_controls(title,x_title,y_title,x_values,y_values,key,
 
     x_values=finite_values(x_values)
     y_values=finite_values(y_values)
-    with st.expander('Titre et axes du graphique',expanded=False):
-        title=st.text_input('Titre du graphique',value=title,key=f'{key}_title')
-        x_scale=st.selectbox(
-            'Échelle horizontale',('Linéaire','Logarithmique'),
-            index=1 if log_x_default else 0,key=f'{key}_x_scale')
-        y_scale=st.selectbox(
-            'Échelle verticale',('Linéaire','Logarithmique'),
-            index=1 if log_y_default else 0,key=f'{key}_y_scale')
+    with st.expander('⚙️ Titre et axes du graphique',expanded=False):
+        title=st.text_input('Titre du graphique',value=title,key=namespace + (f'{key}_title'))
+        x_scale=persistent_scale('Échelle horizontale',namespace + f'{key}_x_scale',log_x_default)
+        y_scale=persistent_scale('Échelle verticale',namespace + f'{key}_y_scale',log_y_default)
         if x_scale=='Logarithmique' and np.any(x_values<=0):
             st.info('Les valeurs X non positives ne sont pas représentables sur une échelle logarithmique.')
         if y_scale=='Logarithmique' and np.any(y_values<=0):
             st.info('Les valeurs Y non positives ne sont pas représentables sur une échelle logarithmique.')
         show_grid=st.checkbox('Afficher la grille et les graduations',value=True,
-                              key=f'{key}_grid')
+                              key=namespace + (f'{key}_grid'))
         set_ranges=st.checkbox('Régler les bornes min/max',value=False,
-                               key=f'{key}_set_ranges')
+                               key=namespace + (f'{key}_set_ranges'))
         x_range=y_range=None
         if set_ranges:
             x_defaults=range_defaults(x_values,x_scale=='Logarithmique')
@@ -75,9 +72,9 @@ def plot_axis_controls(title,x_title,y_title,x_values,y_values,key,
                 with columns[0]:
                     st.caption(f'Axe horizontal — {x_title}')
                     x_min=st.number_input('X minimum',value=x_defaults[0],
-                                          format='%.7g',key=f'{key}_x_min')
+                                          format='%.7g',key=namespace + (f'{key}_x_min'))
                     x_max=st.number_input('X maximum',value=x_defaults[1],
-                                          format='%.7g',key=f'{key}_x_max')
+                                          format='%.7g',key=namespace + (f'{key}_x_max'))
                 if x_min<x_max and (x_scale!='Logarithmique' or x_min>0):
                     x_range=(x_min,x_max)
                 else:
@@ -89,9 +86,9 @@ def plot_axis_controls(title,x_title,y_title,x_values,y_values,key,
                 with columns[1]:
                     st.caption(f'Axe vertical — {y_title}')
                     y_min=st.number_input('Y minimum',value=y_defaults[0],
-                                          format='%.7g',key=f'{key}_y_min')
+                                          format='%.7g',key=namespace + (f'{key}_y_min'))
                     y_max=st.number_input('Y maximum',value=y_defaults[1],
-                                          format='%.7g',key=f'{key}_y_max')
+                                          format='%.7g',key=namespace + (f'{key}_y_max'))
                 if y_min<y_max and (y_scale!='Logarithmique' or y_min>0):
                     y_range=(y_min,y_max)
                 else:
@@ -123,6 +120,15 @@ def apply_plot_axis_controls(fig,options):
                      type='log' if options['log_y'] else 'linear',
                      showgrid=options['show_grid'],
                      range=plotly_range(options['y_range'],options['log_y']))
+    # Plotly attend les coordonnées des annotations en log10 sur un axe log.
+    for annotation in fig.layout.annotations:
+        if annotation.name and annotation.name.startswith('extremum:'):
+            x,y=annotation.x,annotation.y
+            if (options['log_x'] and x<=0) or (options['log_y'] and y<=0):
+                annotation.visible=False
+                continue
+            annotation.x=math.log10(x) if options['log_x'] else x
+            annotation.y=math.log10(y) if options['log_y'] else y
 
 
 def _analysis_markers(fig, records, name, unit, color, symbol, frequency_scale=1.0,
@@ -145,38 +151,36 @@ def _analysis_markers(fig, records, name, unit, color, symbol, frequency_scale=1
 
 
 def _analysis_labels(fig, records, unit, frequency_scale=1.0, position='top center'):
-    if not records:
-        return
-    fig.add_trace(go.Scatter(
-        x=[record['frequency'] for record in records],
-        y=[record['amplitude'] for record in records],
-        mode='text',
-        text=[f"{record['frequency']*frequency_scale:.5g} Hz<br>"
-              f"{record['amplitude']:.5g} {unit}" for record in records],
-        textposition=position,showlegend=False,hoverinfo='skip'))
+    for record in records:
+        fig.add_annotation(
+            name=f"extremum:{record.get('curve','')}:{record.get('index','')}:{position}",
+            x=record['frequency'],y=record['amplitude'],xref='x',yref='y',
+            text=f"{record['frequency']*frequency_scale:.5g} Hz<br>{record['amplitude']:.5g} {unit}",
+            showarrow=True,arrowhead=2,ax=0,ay=40 if position=='bottom center' else -40,
+            axref='pixel',ayref='pixel',bgcolor='white',font=dict(color='#202124'))
 
 
-def _vibration_analysis_options(unit, key_prefix):
-    with st.expander('Analyse des pics et extrema',expanded=False):
+def _vibration_analysis_options(unit, key_prefix, namespace=""):
+    with st.expander('🔎 Analyse des pics et extrema',expanded=False):
         detect_peaks=st.checkbox(
-            'Détecter les pics',value=False,key=f'{key_prefix}_detect_peaks')
+            'Détecter les pics',value=False,key=namespace + (f'{key_prefix}_detect_peaks'))
         min_prominence=(st.number_input(
             f'Proéminence minimale ({unit})',min_value=0.0,value=0.0,
-            step=0.1,format='%.6g',key=f'{key_prefix}_peak_prominence')
+            step=0.1,format='%.6g',key=namespace + (f'{key_prefix}_peak_prominence'))
             if detect_peaks else 0.0)
         use_peak_distance=(st.checkbox(
             'Imposer une distance minimale entre pics',value=False,
-            key=f'{key_prefix}_peak_distance_on') if detect_peaks else False)
+            key=namespace + (f'{key_prefix}_peak_distance_on')) if detect_peaks else False)
         peak_distance=(int(st.number_input(
             'Distance minimale entre pics (échantillons)',min_value=1,value=1,
-            step=1,key=f'{key_prefix}_peak_distance'))
+            step=1,key=namespace + (f'{key_prefix}_peak_distance')))
             if use_peak_distance else None)
         show_global_min=st.checkbox(
-            'Afficher les minima globaux',value=False,key=f'{key_prefix}_global_min')
+            'Afficher les minima globaux',value=False,key=namespace + (f'{key_prefix}_global_min'))
         show_global_max=st.checkbox(
-            'Afficher les maxima globaux',value=False,key=f'{key_prefix}_global_max')
+            'Afficher les maxima globaux',value=False,key=namespace + (f'{key_prefix}_global_max'))
         show_local_extrema=st.checkbox(
-            'Afficher les extrema locaux',value=False,key=f'{key_prefix}_local_extrema')
+            'Afficher les extrema locaux',value=False,key=namespace + (f'{key_prefix}_local_extrema'))
     return {
         'detect_peaks':detect_peaks,
         'min_prominence':min_prominence,
@@ -256,15 +260,15 @@ def _add_curve_analysis(fig, frequency, amplitude, curve, unit, options,
                 'ignoré(s) pour la détection locale.')
 
 
-def ui_vibrations_calculated(df,reg,report):
+def ui_vibrations_calculated(df,reg,report, namespace="", chart_slot=None):
     st.caption('Calculé par l’application — FFT unilatérale, distincte des spectres fournis.')
-    t_idx,avail=_time_selector(df,reg,'vib_calc')
+    t_idx,avail=_time_selector(df,reg,'vib_calc', namespace=namespace)
     if not avail:
         return
-    channel=st.selectbox('Voie temporelle',avail,format_func=lambda j:label(reg,j),key='vib_calc_channel')
-    window=st.selectbox('Fenêtre FFT',('boxcar','hann'),format_func=lambda w:'Rectangulaire' if w=='boxcar' else 'Hann',key='vib_calc_window')
+    channel=st.selectbox('Voie temporelle',avail,format_func=lambda j:label(reg,j),key=namespace + ('vib_calc_channel'))
+    window=st.selectbox('Fenêtre FFT',('boxcar','hann'),format_func=lambda w:'Rectangulaire' if w=='boxcar' else 'Hann',key=namespace + ('vib_calc_window'))
     detrend=st.selectbox('Composante continue',('constant','none'),
-                         format_func=lambda v:'Retirer moyenne' if v=='constant' else 'Aucune',key='vib_calc_detrend')
+                         format_func=lambda v:'Retirer moyenne' if v=='constant' else 'Aucune',key=namespace + ('vib_calc_detrend'))
     if window=='hann':
         st.warning('Hann : la correction de gain cohérent n’est pas une correction de crête d’un choc.')
     else:
@@ -276,31 +280,31 @@ def ui_vibrations_calculated(df,reg,report):
         r=fft_amplitude(x,sampling,window,detrend)
         unit=reg[channel]['unité_normalisée']
         fig=go.Figure();_trace(fig,r['frequency'],r['amplitude'],reg,channel)
-        options=_vibration_analysis_options(unit,'vib_calc')
+        options=_vibration_analysis_options(unit,'vib_calc', namespace=namespace)
         axis_options=plot_axis_controls(
-            f'Amplitude FFT — {label(reg,channel)}','Fréquence (Hz)',
-            f'Amplitude FFT unilatérale ({unit})',r['frequency'],r['amplitude'],
-            f'vib_calc_axis_{channel}')
+            f'FFT amplitude — {label(reg,channel)}','Frequency (Hz)',
+            f'Single-sided FFT amplitude ({unit})',r['frequency'],r['amplitude'],
+            'vib_calc_axis',log_x_default=True,log_y_default=True, namespace=namespace)
         _add_curve_analysis(
             fig,r['frequency'],r['amplitude'],label(reg,channel),unit,options,
             log=axis_options['log_x'])
         apply_plot_axis_controls(fig,axis_options)
-        st.plotly_chart(fig,use_container_width=True)
+        draw_chart(fig, key=namespace + "vib_calc_chart", chart_slot=chart_slot)
         st.caption(f"FFT calculée · N={sampling.n}, fs={sampling.fs:.5g} Hz ({sampling.source}), "
                    f"Δf={r['df']:.5g} Hz, fenêtre {window}, detrend {detrend}, "
                    f"Parseval={r['parseval_error']:.2g}")
         _download_meta({'source':'FFT calculée','temps':label(reg,t_idx),'acceleration':label(reg,channel),
                         'unit':unit,'fs':sampling.fs,'N':sampling.n,'df':r['df'],
-                        'window':window,'detrend':detrend,'source_fs':sampling.source},'vib_calculated')
+                        'window':window,'detrend':detrend,'source_fs':sampling.source},'vib_calculated', namespace=namespace)
     except (ScientificError,ValueError,TypeError) as e:
         st.warning('FFT non calculée : '+str(e))
 
 
-def ui_vibrations(df,reg,report):
-    st.subheader('VIBRATIONS — accélération en fonction de la fréquence')
-    mode=st.radio('Origine du spectre',('Fourni par le fichier','Calculé par l’application (FFT)'),horizontal=True,key='vib_mode')
+def ui_vibrations(df,reg,report, namespace="", chart_slot=None):
+    st.subheader('📈 VIBRATIONS — accélération en fonction de la fréquence')
+    mode=st.radio('Origine du spectre',('Fourni par le fichier','Calculé par l’application (FFT)'),horizontal=True,key=namespace + ('vib_mode'))
     if mode.startswith('Calculé'):
-        ui_vibrations_calculated(df,reg,report)
+        ui_vibrations_calculated(df,reg,report, namespace=namespace, chart_slot=chart_slot)
         return
     st.caption('Spectres fournis par le fichier ; aucun spectre calculé implicitement.')
     candidates=frequency_candidates(reg)
@@ -314,33 +318,33 @@ def ui_vibrations(df,reg,report):
     else:
         options=candidates
     i=st.selectbox('Fréquence',options,index=options.index(default) if default in options else 0,
-                   format_func=lambda x:'— Choisir un axe —' if x is None else label(reg,x), key='vib_frequency')
+                   format_func=lambda x:'— Choisir un axe —' if x is None else label(reg,x), key=namespace + ('vib_frequency'))
     if i is None:
         return
     accel=acceleration_candidates(df,reg,i)
     if not accel:
         st.info('Aucune accélération de même support que cette fréquence.')
         return
-    defaults=[j for j in accel if reg[j]['groupe']=='A — profil' and reg[j]['nom_brut'] in ('Demand1 (G)','Control1 (G)')]
+    defaults=[j for j in accel if reg[j]['groupe']=='A — profil'
+              and reg[j]['nom_brut'] in ('Demand1 (G)','Control1 (G)','Tol1(+)','Tol1(-)')]
     selected=st.multiselect('Accélérations',accel,default=defaults if defaults else accel[:1],
-                           format_func=lambda j:label(reg,j),key='vib_series')
+                           format_func=lambda j:label(reg,j),key=namespace + ('vib_series'))
     try:
         f,ys,unit=validate_frequency_plot(df,reg,i,selected)
-        convert=unit=='G' and st.checkbox('Conversion explicite G → m/s²',value=False,key='vib_convert')
+        convert=unit=='G' and st.checkbox('Conversion explicite G → m/s²',value=False,key=namespace + ('vib_convert'))
         factor=G0 if convert else 1
         target_unit='m/s²' if convert else unit
-        log_suggested=bool(constant_ratio(f))
-        options=_vibration_analysis_options(target_unit,'vib')
+        options=_vibration_analysis_options(target_unit,'vib', namespace=namespace)
 
         raw_f=pd.to_numeric(df.iloc[:,i],errors='raise').to_numpy(dtype=float)
         frequency_unit=reg[i]['unité_normalisée']
         frequency_scale=1000.0 if frequency_unit=='kHz' else 1.0
         axis_options=plot_axis_controls(
-            'Spectre de vibration — '+', '.join(label(reg,j) for j in selected),
-            label(reg,i),f'Accélération ({target_unit})',raw_f,
+            'Vibration spectrum — '+', '.join(label(reg,j) for j in selected),
+            label(reg,i),f'Acceleration ({target_unit})',raw_f,
             [ys[j]*factor for j in ys],
-            'vib_axis_'+str(i)+'_'+ '_'.join(map(str,selected)),
-            log_x_default=log_suggested)
+            'vib_axis_'+str(i),
+            log_x_default=True,log_y_default=True, namespace=namespace)
         fig=go.Figure()
         for j in ys:
             raw_y=pd.to_numeric(df.iloc[:,j],errors='raise').to_numpy(dtype=float)
@@ -355,13 +359,13 @@ def ui_vibrations(df,reg,report):
                    ('abscisse non monotone' if np.any(np.diff(f)<0) else 'abscisse monotone'))
         if np.any(np.diff(f)<0):
             st.warning('Fréquence non monotone : affichage dans l’ordre des points, sans tri.')
-        st.plotly_chart(fig,use_container_width=True)
+        draw_chart(fig, key=namespace + "vib_chart", chart_slot=chart_slot)
         meta={'source':'fourni par le fichier','frequence':label(reg,i),
               'accelerations':[label(reg,j) for j in selected], 'unit':target_unit,
               'conversion_G_ms2':convert,'points':len(f),
               'log_frequency':axis_options['log_x']}
         # Contrôle a-v-d uniquement avec correspondances explicites du profil.
-        if st.checkbox('Vérifier cohérence accélération / vitesse / déplacement (si présents)',key='vib_avd'):
+        if st.checkbox('Vérifier cohérence accélération / vitesse / déplacement (si présents)',key=namespace + ('vib_avd')):
             ids={r['nom_brut']:r['index'] for r in reg if r['groupe']==reg[i]['groupe']}
             for prefix in ('Demand','Control'):
                 names=[f'{prefix}1 (G)',f'{prefix} Velocity1 (m/s)',f'{prefix} Displacement1 (mm)']
@@ -373,11 +377,11 @@ def ui_vibrations(df,reg,report):
                         if max(result)>1e-3:
                             st.warning('Écart supérieur à 0,1 % ; données non modifiées.')
             st.caption('G et m/s en crête ; mm en crête-à-crête (convention du profil validé).')
-        _download_meta(meta,'vibrations')
+        _download_meta(meta,'vibrations', namespace=namespace)
     except (ScientificError,ValueError,TypeError) as e:
         st.warning(str(e))
 
-def _time_selector(df,reg,tag):
+def _time_selector(df,reg,tag, namespace=""):
     possible=time_candidates(reg)
     if not possible:
         st.info('Aucun axe de temps déclaré.')
@@ -385,7 +389,7 @@ def _time_selector(df,reg,tag):
     preferred=next((i for i in possible if reg[i]['groupe']=='C — temporel'),None)
     opts=([None]+possible) if preferred is None and len(possible)>1 else possible
     t=st.selectbox('Axe temps',opts,index=opts.index(preferred) if preferred in opts else 0,
-                   format_func=lambda j:'— Choisir un temps —' if j is None else label(reg,j),key=tag+'_time')
+                   format_func=lambda j:'— Choisir un temps —' if j is None else label(reg,j),key=namespace + (tag+'_time'))
     if t is None:
         return None,None
     accel=time_acceleration_candidates(df,reg,t)
@@ -406,13 +410,13 @@ def _sampling(df,reg,report,t_idx,x_idx,expected):
     sampling=validate_sampling(t,reg[t_idx]['unité_normalisée'],expected_fs=expected,precision=prec)
     return t,x,sampling
 
-def ui_chocs(df,reg,report):
-    st.subheader('CHOCS — signal temporel et FFT optionnelle')
-    t_idx,avail=_time_selector(df,reg,'shock')
+def ui_chocs(df,reg,report, namespace="", chart_slot=None):
+    st.subheader('📈 CHOCS — signal temporel et FFT optionnelle')
+    t_idx,avail=_time_selector(df,reg,'shock', namespace=namespace)
     if not avail:
         return
     default=[j for j in avail if reg[j]['groupe']=='C — temporel'] or avail[:1]
-    selected=st.multiselect('Voies',avail,default=default,format_func=lambda j:label(reg,j),key='shock_channels')
+    selected=st.multiselect('Voies',avail,default=default,format_func=lambda j:label(reg,j),key=namespace + ('shock_channels'))
     if not selected:
         return
     units={reg[j]['unité_normalisée'] for j in selected}
@@ -440,27 +444,28 @@ def ui_chocs(df,reg,report):
         st.warning('Aucune voie complète et finie pour le tracé temporel.')
         return
     axis_options=plot_axis_controls(
-        'Signal temporel — '+', '.join(label(reg,j) for j in valid),
-        label(reg,t_idx),f'Accélération ({unit})',times,amplitudes,
-        'shock_time_axis_'+str(t_idx)+'_'+'_'.join(map(str,valid)))
+        'Time signal — '+', '.join(label(reg,j) for j in valid),
+        label(reg,t_idx),f'Acceleration ({unit})',times,amplitudes,
+        'shock_time_axis_'+str(t_idx), namespace=namespace)
     apply_plot_axis_controls(fig,axis_options)
-    st.plotly_chart(fig,use_container_width=True)
+    draw_chart(fig, key=namespace + "shock_time_chart", chart_slot=chart_slot)
     for j in valid:
         x=df.iloc[:,j].dropna().to_numpy(dtype=float)
         stats=signal_stats(x)
         st.caption(label(reg,j)+' · '+ ' · '.join(f'{k}: {v:.5g} {unit}' for k,v in stats.items()))
-    if not st.checkbox('Calculer la FFT d’amplitude (option)',value=False,key='shock_fft'):
+    fft_chart_slot = st.container()
+    if not st.checkbox('Calculer la FFT d’amplitude (option)',value=False,key=namespace + ('shock_fft')):
         st.caption('FFT désactivée : aucun calcul spectral lancé.')
         return
-    expected_on=st.checkbox('Comparer à une fs attendue (Hz)',value=False,key='shock_expected_on')
-    expected_str=st.text_input('fs attendue (Hz)',value='',placeholder='Saisir une valeur vérifiée',key='shock_expected') if expected_on else None
+    expected_on=st.checkbox('Comparer à une fs attendue (Hz)',value=False,key=namespace + ('shock_expected_on'))
+    expected_str=st.text_input('fs attendue (Hz)',value='',placeholder='Saisir une valeur vérifiée',key=namespace + ('shock_expected')) if expected_on else None
     try: expected=float(expected_str) if expected_str is not None else None
     except ValueError:
         st.warning('fs attendue invalide : saisir un nombre positif.'); return
     if expected is not None and expected<=0:
         st.warning('La fs attendue doit être positive.'); return
-    window=st.selectbox('Fenêtre FFT',('boxcar','hann'),format_func=lambda w:'Rectangulaire' if w=='boxcar' else 'Hann',key='shock_window')
-    detrend=st.selectbox('Composante continue',('constant','none'),format_func=lambda v:'Retirer la moyenne' if v=='constant' else 'Aucune correction',key='shock_detrend')
+    window=st.selectbox('Fenêtre FFT',('boxcar','hann'),format_func=lambda w:'Rectangulaire' if w=='boxcar' else 'Hann',key=namespace + ('shock_window'))
+    detrend=st.selectbox('Composante continue',('constant','none'),format_func=lambda v:'Retirer la moyenne' if v=='constant' else 'Aucune correction',key=namespace + ('shock_detrend'))
     if window=='hann':
         st.warning('Fenêtre Hann : la correction de gain cohérent n’assure pas la restitution de la crête d’un choc transitoire.')
     else:
@@ -492,23 +497,25 @@ def ui_chocs(df,reg,report):
             st.warning(f'{label(reg,j)} — FFT non calculée : {e}')
     if meta['voies']:
         axis_options=plot_axis_controls(
-            'FFT de choc — '+', '.join(item['colonne'] for item in meta['voies']),
-            'Fréquence (Hz)',f'Amplitude FFT unilatérale ({unit})',
+            'Shock FFT — '+', '.join(item['colonne'] for item in meta['voies']),
+            'Frequency (Hz)',f'Single-sided FFT amplitude ({unit})',
             fft_frequencies,fft_amplitudes,
-            'shock_fft_axis_'+str(t_idx)+'_'+'_'.join(str(item['colonne']) for item in meta['voies']))
+            'shock_fft_axis_'+str(t_idx), namespace=namespace)
         apply_plot_axis_controls(fft_fig,axis_options)
-        st.plotly_chart(fft_fig,use_container_width=True)
+        draw_chart(fft_fig, key=namespace + "shock_fft_chart", chart_slot=fft_chart_slot)
         st.caption('Spectre d’amplitude FFT (G si entrée en G), distinct de la transformée G·s et de la PSD G²/Hz ; pas de SRS.')
-        _download_meta(meta,'chocs_fft')
+        _download_meta(meta,'chocs_fft', namespace=namespace)
 
-def ui_psd(df,reg,report):
-    st.subheader('PSD — densité spectrale de puissance')
+def ui_psd(df,reg,report, namespace="", chart_slot=None):
+    st.subheader('📈 PSD — densité spectrale de puissance')
+    primary_slot_used = False
     given=[r['index'] for r in reg if r['dimension']=='PSD_accélération' and r['statut_unité']=='déclarée']
     if not given:
         st.info('Aucune PSD fournie dans ce fichier.')
     else:
         st.caption('PSD fournie par le fichier (aucun calcul)')
         for j in given:
+            current_slot = chart_slot if not primary_slot_used else st.container()
             compatible=[i for i in frequency_candidates(reg) if df.iloc[:,i].notna().equals(df.iloc[:,j].notna())]
             if not compatible:
                 st.warning(f'{label(reg,j)} : fréquence de même support absente.')
@@ -518,7 +525,7 @@ def ui_psd(df,reg,report):
                 i=st.selectbox(
                     f'Axe fréquence pour {label(reg,j)}',compatible,
                     format_func=lambda index:label(reg,index),
-                    key=f'psd_frequency_{j}')
+                    key=namespace + (f'psd_frequency_{j}'))
             try:
                 f=df.iloc[:,i].dropna().to_numpy(dtype=float)
                 p=df.iloc[:,j].dropna().to_numpy(dtype=float)
@@ -530,32 +537,34 @@ def ui_psd(df,reg,report):
                 continue
             fig=go.Figure();_trace(fig,f,p,reg,j)
             axis_options=plot_axis_controls(
-                f'PSD fournie — {label(reg,j)}',label(reg,i),
-                reg[j]['unité_normalisée'],f,p,f'psd_given_axis_{i}_{j}')
+                f'Provided PSD — {label(reg,j)}',label(reg,i),
+                reg[j]['unité_normalisée'],f,p,f'psd_given_axis_{i}_{j}', namespace=namespace)
             apply_plot_axis_controls(fig,axis_options)
-            st.plotly_chart(fig,use_container_width=True)
+            draw_chart(fig, key=namespace + f"psd_given_chart_{j}", chart_slot=current_slot)
+            primary_slot_used = True
     kind=infer_known_test_type(reg)
     if kind!='inconnu':
         st.warning(f'Type d’essai reconnu : {kind}. Calcul PSD Welch refusé (réservé aux essais aléatoires).')
         return
     st.warning('Type d’essai non identifié. Ne calculer une PSD que pour un essai aléatoire stationnaire confirmé.')
-    if not st.checkbox('Je confirme que ce signal provient d’un essai aléatoire stationnaire',key='psd_confirm'):
+    welch_chart_slot = st.container() if primary_slot_used else chart_slot
+    if not st.checkbox('Je confirme que ce signal provient d’un essai aléatoire stationnaire',key=namespace + ('psd_confirm')):
         return
-    t_idx,avail=_time_selector(df,reg,'psd')
+    t_idx,avail=_time_selector(df,reg,'psd', namespace=namespace)
     if not avail:
         return
-    chan=st.selectbox('Voie aléatoire',avail,format_func=lambda j:label(reg,j),key='psd_channel')
+    chan=st.selectbox('Voie aléatoire',avail,format_func=lambda j:label(reg,j),key=namespace + ('psd_channel'))
     count=int(df.iloc[:,chan].notna().sum())
     # Valeurs suggérées et explicites : aucun nperseg silencieux.
     suggested=min(1024,max(2,count//4))
     nseg=int(st.number_input('Taille du segment (points)',min_value=2,max_value=max(2,count),
-                             value=suggested,step=1,key='psd_segment'))
-    overlap=int(st.slider('Recouvrement (%)',min_value=0,max_value=95,value=50,step=5,key='psd_overlap'))
-    window=st.selectbox('Fenêtre Welch',('hann','boxcar'),key='psd_window')
+                             value=suggested,step=1,key=namespace + ('psd_segment')))
+    overlap=int(st.slider('Recouvrement (%)',min_value=0,max_value=95,value=50,step=5,key=namespace + ('psd_overlap')))
+    window=st.selectbox('Fenêtre Welch',('hann','boxcar'),key=namespace + ('psd_window'))
     detrend=st.selectbox('Detrend Welch',('constant','none'),
-                         format_func=lambda v:'Retirer moyenne de chaque segment' if v=='constant' else 'Aucun',key='psd_detrend')
-    expected_on=st.checkbox('Comparer à une fs attendue (Hz)',value=False,key='psd_expected_on')
-    expected_str=st.text_input('fs attendue (Hz)',value='',placeholder='Saisir une valeur vérifiée',key='psd_expected') if expected_on else None
+                         format_func=lambda v:'Retirer moyenne de chaque segment' if v=='constant' else 'Aucun',key=namespace + ('psd_detrend'))
+    expected_on=st.checkbox('Comparer à une fs attendue (Hz)',value=False,key=namespace + ('psd_expected_on'))
+    expected_str=st.text_input('fs attendue (Hz)',value='',placeholder='Saisir une valeur vérifiée',key=namespace + ('psd_expected')) if expected_on else None
     try: expected=float(expected_str) if expected_str is not None else None
     except ValueError:
         st.warning('fs attendue invalide : saisir un nombre positif.'); return
@@ -564,8 +573,8 @@ def ui_psd(df,reg,report):
     k=count_segments(count,nseg,overlap)
     st.caption(f'K attendu = {k} segments ; minimum requis : 5.')
     if reg[chan]['unité_normalisée']=='G':
-        st.checkbox('Conversion explicite G²/Hz → (m/s²)²/Hz (g₀ = 9,80665)',value=False,key='psd_convert')
-    if not st.checkbox('Activer le calcul PSD Welch',value=False,key='psd_compute'):
+        st.checkbox('Conversion explicite G²/Hz → (m/s²)²/Hz (g₀ = 9,80665)',value=False,key=namespace + ('psd_convert'))
+    if not st.checkbox('Activer le calcul PSD Welch',value=False,key=namespace + ('psd_compute')):
         return
     try:
         t,x,sampling=_sampling(df,reg,report,t_idx,chan,expected)
@@ -574,24 +583,24 @@ def ui_psd(df,reg,report):
         result=welch_psd(x,sampling,nseg,overlap,window,detrend)
         unit=reg[chan]['unité_normalisée']
         factor=1.
-        converted=st.session_state.get('psd_convert',False) if unit=='G' else False
+        converted=st.session_state.get(namespace + ('psd_convert'),False) if unit=='G' else False
         if converted: factor=G0**2
         p=result['psd']*factor
         f=result['frequency']
         fig=go.Figure();_trace(fig,f,p,reg,chan)
         output_unit=('(m/s²)²/Hz' if converted else f'{unit}²/Hz')
         axis_options=plot_axis_controls(
-            f'PSD Welch — {label(reg,chan)}','Fréquence (Hz)',
+            f'Welch PSD — {label(reg,chan)}','Frequency (Hz)',
             f'PSD ({output_unit})',f,p,
-            f'psd_welch_axis_{chan}_{nseg}_{overlap}_{window}_{detrend}')
+            f'psd_welch_axis_{chan}_{nseg}_{overlap}_{window}_{detrend}', namespace=namespace)
         apply_plot_axis_controls(fig,axis_options)
-        st.plotly_chart(fig,use_container_width=True)
+        draw_chart(fig, key=namespace + "psd_welch_chart", chart_slot=welch_chart_slot)
         st.caption(f"PSD calculée — Welch · fs={sampling.fs:.5g} Hz ({sampling.source}) · Δf={result['df']:.5g} Hz · "
                    f"K={result['k']} · ddl indicatifs ≈ {result['dof_approx']} · incertitude indicative ≈ {result['uncertainty_approx']:.1%} · "
                    f"fenêtre {window} · detrend {detrend} · recouvrement {overlap}% · unité {output_unit}")
         st.caption('L’intégrale Welch est une estimation de la variance, non une identité exacte avec la variance totale.')
         low,high=st.slider('Bande de calcul RMS (Hz)',min_value=float(f[0]),max_value=float(f[-1]),
-                           value=(float(f[0]),float(f[-1])),key='psd_band')
+                           value=(float(f[0]),float(f[-1])),key=namespace + ('psd_band'))
         if low < high:
             st.metric(f'RMS calculé ({output_unit.replace("²/Hz", "")})',f'{band_rms(f,p,low,high):.5g}')
         meta={'source':'PSD recalculée — Welch','voie':label(reg,chan),'temps':label(reg,t_idx),
@@ -599,6 +608,6 @@ def ui_psd(df,reg,report):
               'resolution_Hz':result['df'],'segments':result['k'],'nperseg':nseg,
               'overlap_percent':overlap,'window':window,'detrend':detrend,
               'conversion_G_ms2':converted,'g0':G0}
-        _download_meta(meta,'psd_welch')
+        _download_meta(meta,'psd_welch', namespace=namespace)
     except (ScientificError,ValueError,TypeError) as e:
         st.warning(f'PSD non calculée : {e}')
